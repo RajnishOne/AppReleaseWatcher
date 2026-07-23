@@ -57,6 +57,43 @@ class AppStoreMonitor:
     ITUNES_LOOKUP_URL = "https://itunes.apple.com/lookup"
     MAX_RETRIES = 3
     RETRY_DELAY = 2  # seconds
+    COUNTRY_LANGUAGE_MAP = {
+        'au': 'en',
+        'br': 'pt',
+        'ca': 'en',
+        'cn': 'zh',
+        'cz': 'cs',
+        'de': 'de',
+        'dk': 'da',
+        'es': 'es',
+        'fi': 'fi',
+        'fr': 'fr',
+        'gb': 'en',
+        'gr': 'el',
+        'hu': 'hu',
+        'id': 'id',
+        'ie': 'en',
+        'il': 'he',
+        'in': 'en',
+        'it': 'it',
+        'jp': 'ja',
+        'kr': 'ko',
+        'nl': 'nl',
+        'no': 'no',
+        'nz': 'en',
+        'pl': 'pl',
+        'pt': 'pt',
+        'ro': 'ro',
+        'ru': 'ru',
+        'se': 'sv',
+        'sk': 'sk',
+        'th': 'th',
+        'tr': 'tr',
+        'tw': 'zh',
+        'ua': 'uk',
+        'us': 'en',
+        'vn': 'vi',
+    }
     
     def __init__(self, storage, formatter, settings=None):
         self.storage = storage
@@ -82,6 +119,10 @@ class AppStoreMonitor:
         if len(code) != 2 or not code.isalpha():
             return "us"
         return code
+
+    def _language_for_country(self, country_code):
+        """Choose the storefront language used for localized store metadata."""
+        return self.COUNTRY_LANGUAGE_MAP.get(country_code, 'en')
 
     def fetch_app_info(self, app_store_id, country="us"):
         """Fetch app information from iTunes Lookup API with retry logic"""
@@ -148,6 +189,7 @@ class AppStoreMonitor:
     def fetch_android_app_info(self, package_id, country="us"):
         """Fetch app information from Google Play Store scraper with retry logic"""
         country_code = self._normalize_country(country)
+        language_code = self._language_for_country(country_code)
         
         last_exception = None
         for attempt in range(self.MAX_RETRIES + 1):
@@ -157,7 +199,7 @@ class AppStoreMonitor:
                     
                 result = play_app(
                     package_id,
-                    lang='en',
+                    lang=language_code,
                     country=country_code
                 )
                 
@@ -173,15 +215,25 @@ class AppStoreMonitor:
                 # This fixes the issue where google-play-scraper returns None/empty for recentChanges and updated.
                 if not recent_changes or not updated or version == 'Varies with device':
                     try:
-                        url = f"https://play.google.com/store/apps/details?id={package_id}&hl=en&gl={country_code}"
-                        resp = self.session.get(url, timeout=10, headers={'User-Agent': 'Mozilla/5.0', 'Accept-Language': 'en'})
+                        url = f"https://play.google.com/store/apps/details?id={package_id}&hl={language_code}&gl={country_code}"
+                        resp = self.session.get(
+                            url,
+                            timeout=10,
+                            headers={
+                                'User-Agent': 'Mozilla/5.0',
+                                'Accept-Language': language_code,
+                            },
+                        )
                         if resp.status_code == 200:
                             html_text = resp.text
                             
                             # Extract release notes (recent changes)
                             if not recent_changes:
                                 rn_match = re.search(
-                                    r'What[’\']s\s+new</h2></div></div></header><div class="[^"]*"[^>]*><div itemprop="description">([\s\S]*?)</div></div>',
+                                    r'(?:What[’\']s\s+new|Новое\s+в\s+приложении|Что\s+нового)'
+                                    r'</h2>\s*</div>\s*</div>\s*</header>\s*'
+                                    r'<div class="[^"]*"[^>]*>\s*'
+                                    r'<div itemprop="description">([\s\S]*?)</div>\s*</div>',
                                     html_text,
                                     re.IGNORECASE
                                 )
