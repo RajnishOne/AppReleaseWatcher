@@ -37,6 +37,8 @@ services:
     restart: unless-stopped
     ports:
       - "8192:8192"
+    environment:
+      - GUNICORN_WORKERS=1
     volumes:
       - ./data:/data
     healthcheck:
@@ -96,7 +98,7 @@ Before adding apps, you need to configure at least one notification destination.
 1. Message [@BotFather](https://t.me/BotFather) on Telegram
 2. Send `/newbot` and follow instructions to create a bot
 3. Copy the bot token (format: `123456789:ABCdefGHIjklMNOpqrsTUVwxyz`)
-4. Message [@userinfobot](https://t.me/userinfobot) to get your chat ID
+4. Message [@userinfobot](https://t.me/userinfobot) to get your chat ID. For a forum topic, use `chat_id_topic_id` (for example `-1001234567890_2`).
 5. You can set the bot token in Settings for all apps, or per app
 
 **Microsoft Teams:**
@@ -349,7 +351,7 @@ services:
     environment:
       - CHECK_INTERVAL=12h                     # Default check interval (12h, 6h, 1d, 30m, etc.)
       - PORT=8192                              # Server port (default: 8192)
-      - GUNICORN_WORKERS=2                     # Gunicorn worker processes (container default: 2)
+      - GUNICORN_WORKERS=1                     # Gunicorn worker processes (container default: 1)
       - GUNICORN_THREADS=4                     # Threads per worker (container default: 4)
       - GUNICORN_TIMEOUT=60                    # Worker timeout in seconds (container default: 60)
       - TZ=America/New_York                    # Timezone (optional, e.g., UTC, Europe/London)
@@ -450,7 +452,7 @@ services:
 |----------|-------------|---------|-----------------|
 | `CHECK_INTERVAL` | Default check interval for apps without custom intervals | `12h` | `30m`, `6h`, `12h`, `1d`, `7d` |
 | `PORT` | Server port number | `8192` | Any valid port number (e.g., `3000`, `8080`) |
-| `GUNICORN_WORKERS` | Gunicorn worker process count | `2` | Integer (e.g., `2`, `3`, `4`) |
+| `GUNICORN_WORKERS` | Gunicorn worker process count | `1` | Keep at `1` while using the built-in scheduler and file storage |
 | `GUNICORN_THREADS` | Threads per Gunicorn worker (`gthread`) | `4` | Integer (e.g., `2`, `4`, `8`) |
 | `GUNICORN_TIMEOUT` | Gunicorn worker request timeout (seconds) | `60` | Integer seconds (e.g., `30`, `60`, `120`) |
 | `TZ` | Timezone for timestamps and logging | System timezone | `UTC`, `America/New_York`, `Europe/London`, `Asia/Tokyo` |
