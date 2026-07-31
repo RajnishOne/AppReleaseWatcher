@@ -57,6 +57,43 @@ class AppStoreMonitor:
     ITUNES_LOOKUP_URL = "https://itunes.apple.com/lookup"
     MAX_RETRIES = 3
     RETRY_DELAY = 2  # seconds
+    COUNTRY_LANGUAGE_MAP = {
+        'au': 'en',
+        'br': 'pt',
+        'ca': 'en',
+        'cn': 'zh',
+        'cz': 'cs',
+        'de': 'de',
+        'dk': 'da',
+        'es': 'es',
+        'fi': 'fi',
+        'fr': 'fr',
+        'gb': 'en',
+        'gr': 'el',
+        'hu': 'hu',
+        'id': 'id',
+        'ie': 'en',
+        'il': 'he',
+        'in': 'en',
+        'it': 'it',
+        'jp': 'ja',
+        'kr': 'ko',
+        'nl': 'nl',
+        'no': 'no',
+        'nz': 'en',
+        'pl': 'pl',
+        'pt': 'pt',
+        'ro': 'ro',
+        'ru': 'ru',
+        'se': 'sv',
+        'sk': 'sk',
+        'th': 'th',
+        'tr': 'tr',
+        'tw': 'zh',
+        'ua': 'uk',
+        'us': 'en',
+        'vn': 'vi',
+    }
     
     def __init__(self, storage, formatter, settings=None):
         self.storage = storage
@@ -83,12 +120,21 @@ class AppStoreMonitor:
             return "us"
         return code
 
+    def _language_for_country(self, country_code):
+        """Choose the storefront language used for localized store metadata."""
+        return self.COUNTRY_LANGUAGE_MAP.get(country_code, 'en')
+
     def fetch_app_info(self, app_store_id, country="us"):
         """Fetch app information from iTunes Lookup API with retry logic"""
         country_code = self._normalize_country(country)
         params = {
             'id': app_store_id,
-            'country': country_code
+            'country': country_code,
+            '_': str(time.time_ns())
+        }
+        headers = {
+            'Cache-Control': 'no-cache, no-store, max-age=0',
+            'Pragma': 'no-cache',
         }
         
         last_exception = None
@@ -97,6 +143,7 @@ class AppStoreMonitor:
                 response = self.session.get(
                     self.ITUNES_LOOKUP_URL, 
                     params=params, 
+                    headers=headers,
                     timeout=10
                 )
                 response.raise_for_status()
@@ -148,6 +195,7 @@ class AppStoreMonitor:
     def fetch_android_app_info(self, package_id, country="us"):
         """Fetch app information from Google Play Store scraper with retry logic"""
         country_code = self._normalize_country(country)
+        language_code = self._language_for_country(country_code)
         
         last_exception = None
         for attempt in range(self.MAX_RETRIES + 1):
@@ -157,7 +205,7 @@ class AppStoreMonitor:
                     
                 result = play_app(
                     package_id,
-                    lang='en',
+                    lang=language_code,
                     country=country_code
                 )
                 
@@ -173,15 +221,30 @@ class AppStoreMonitor:
                 # This fixes the issue where google-play-scraper returns None/empty for recentChanges and updated.
                 if not recent_changes or not updated or version == 'Varies with device':
                     try:
-                        url = f"https://play.google.com/store/apps/details?id={package_id}&hl=en&gl={country_code}"
-                        resp = self.session.get(url, timeout=10, headers={'User-Agent': 'Mozilla/5.0', 'Accept-Language': 'en'})
+                        url = (
+                            f"https://play.google.com/store/apps/details"
+                            f"?id={package_id}&hl={language_code}&gl={country_code}&_={time.time_ns()}"
+                        )
+                        resp = self.session.get(
+                            url,
+                            timeout=10,
+                            headers={
+                                'User-Agent': 'Mozilla/5.0',
+                                'Accept-Language': language_code,
+                                'Cache-Control': 'no-cache, no-store, max-age=0',
+                                'Pragma': 'no-cache',
+                            },
+                        )
                         if resp.status_code == 200:
                             html_text = resp.text
                             
                             # Extract release notes (recent changes)
                             if not recent_changes:
                                 rn_match = re.search(
-                                    r'What[’\']s\s+new</h2></div></div></header><div class="[^"]*"[^>]*><div itemprop="description">([\s\S]*?)</div></div>',
+                                    r'(?:What[’\']s\s+new|Новое\s+в\s+приложении|Что\s+нового)'
+                                    r'</h2>\s*</div>\s*</div>\s*</header>\s*'
+                                    r'<div class="[^"]*"[^>]*>\s*'
+                                    r'<div itemprop="description">([\s\S]*?)</div>\s*</div>',
                                     html_text,
                                     re.IGNORECASE
                                 )
@@ -243,6 +306,7 @@ class AppStoreMonitor:
         app_store_id = app['app_store_id']
         app_store_country = self._normalize_country(app.get('app_store_country', 'us'))
         platform = app.get('platform', 'ios')
+        app_name = app.get('name', 'App')
         
         # Get notification destinations - support both new format and legacy webhook_url
         notification_destinations = app.get('notification_destinations', [])
@@ -271,8 +335,14 @@ class AppStoreMonitor:
                                 'message': 'Checked recently (cached)',
                                 'current_version': current_version,
                                 'last_version': last_version,
+                                'update_detected': False,
                                 'checked_at': last_check_str,
-                                'formatted_preview': self.formatter.format_release_notes(current_version or '', '')
+                                'formatted_preview': self.formatter.format_release_notes(
+                                    current_version or '',
+                                    '',
+                                    app_name=app_name,
+                                    platform=platform,
+                                )
                             }
                     except Exception as e:
                         logger.debug(f"Error parsing last check time: {e}")
@@ -302,10 +372,6 @@ class AppStoreMonitor:
                 self.storage.update_last_check(app_id, datetime.now().isoformat())
                 self.storage.save_current_version(app_id, current_version)
                 
-                # For Android, also save the updated timestamp
-                if platform == 'android' and app_info.get('updated'):
-                    self.storage.save_last_updated_time(app_id, app_info['updated'])
-                
                 # Update app icon URL if available
                 artwork_url = app_info.get('artworkUrl')
                 if artwork_url:
@@ -315,30 +381,37 @@ class AppStoreMonitor:
                         app_data['icon_url'] = artwork_url
                         self.storage.save_app(app_data)
                 
-                # Determine if version has changed / updated
-                is_updated = False
-                if not last_version:
-                    is_updated = True
-                elif platform == 'android':
-                    current_updated_time = app_info.get('updated')
-                    if current_updated_time and last_updated_time:
-                        if str(current_updated_time) != str(last_updated_time):
-                            is_updated = True
-                    elif current_version != last_version:
-                        is_updated = True
-                else:
-                    if current_version != last_version:
-                        is_updated = True
+                # A version difference must always trigger an update. Android's
+                # updated timestamp is an additional signal for metadata/release
+                # note changes that keep the same public version.
+                current_updated_time = app_info.get('updated') if platform == 'android' else None
+                version_changed = not last_version or current_version != last_version
+                timestamp_changed = bool(
+                    platform == 'android'
+                    and current_updated_time
+                    and last_updated_time
+                    and str(current_updated_time) != str(last_updated_time)
+                )
+                is_updated = version_changed or timestamp_changed
 
                 # Check if version changed
                 if not is_updated:
+                    # Keep a baseline for future Android metadata-only changes.
+                    if current_updated_time:
+                        self.storage.save_last_updated_time(app_id, current_updated_time)
                     return {
                         'success': True,
                         'message': 'No new version',
                         'current_version': current_version,
                         'last_version': last_version,
+                        'update_detected': False,
                         'checked_at': datetime.now().isoformat(),
-                        'formatted_preview': self.formatter.format_release_notes(current_version, release_notes)
+                        'formatted_preview': self.formatter.format_release_notes(
+                            current_version,
+                            release_notes,
+                            app_name=app_name,
+                            platform=platform,
+                        )
                     }
                 
                 # New version detected - check if auto-post is enabled
@@ -352,14 +425,24 @@ class AppStoreMonitor:
                         'message': 'New version detected (auto-post disabled)',
                         'current_version': current_version,
                         'last_version': last_version,
+                        'update_detected': True,
                         'checked_at': datetime.now().isoformat(),
-                        'formatted_preview': self.formatter.format_release_notes(current_version, release_notes),
+                        'formatted_preview': self.formatter.format_release_notes(
+                            current_version,
+                            release_notes,
+                            app_name=app_name,
+                            platform=platform,
+                        ),
                         'auto_post_disabled': True
                     }
                 
                 # Auto-post is enabled - post to all configured destinations
-                formatted_notes = self.formatter.format_release_notes(current_version, release_notes)
-                app_name = app.get('name', 'App')
+                formatted_notes = self.formatter.format_release_notes(
+                    current_version,
+                    release_notes,
+                    app_name=app_name,
+                    platform=platform,
+                )
                 
                 # Post to all notification destinations
                 success_count = 0
@@ -381,6 +464,8 @@ class AppStoreMonitor:
                 if success_count > 0:
                     # Update last posted version if at least one destination succeeded
                     self.storage.save_last_version(app_id, current_version)
+                    if current_updated_time:
+                        self.storage.save_last_updated_time(app_id, current_updated_time)
                     message = f'New version posted to {success_count} destination(s)'
                     if error_messages:
                         message += f' ({len(error_messages)} failed)'
@@ -406,6 +491,7 @@ class AppStoreMonitor:
                         'message': message,
                         'current_version': current_version,
                         'last_version': last_version,
+                        'update_detected': True,
                         'checked_at': datetime.now().isoformat(),
                         'formatted_preview': formatted_notes
                     }
@@ -432,6 +518,8 @@ class AppStoreMonitor:
                         'success': False,
                         'error': error_msg,
                         'current_version': current_version,
+                        'last_version': last_version,
+                        'update_detected': True,
                         'checked_at': datetime.now().isoformat(),
                         'formatted_preview': formatted_notes
                     }
@@ -450,6 +538,7 @@ class AppStoreMonitor:
         app_store_id = app['app_store_id']
         app_store_country = self._normalize_country(app.get('app_store_country', 'us'))
         platform = app.get('platform', 'ios')
+        app_name = app.get('name', 'App')
         
         # Get notification destinations - support both new format and legacy webhook_url
         notification_destinations = app.get('notification_destinations', [])
@@ -480,13 +569,13 @@ class AppStoreMonitor:
             # Update current version
             self.storage.save_current_version(app_id, current_version)
             
-            # For Android, also save the updated timestamp
-            if platform == 'android' and app_info.get('updated'):
-                self.storage.save_last_updated_time(app_id, app_info['updated'])
-            
             # Format and post to all destinations
-            formatted_notes = self.formatter.format_release_notes(current_version, release_notes)
-            app_name = app.get('name', 'App')
+            formatted_notes = self.formatter.format_release_notes(
+                current_version,
+                release_notes,
+                app_name=app_name,
+                platform=platform,
+            )
             
             success_count = 0
             error_messages = []
@@ -507,6 +596,8 @@ class AppStoreMonitor:
             if success_count > 0:
                 # Update last posted version if at least one destination succeeded
                 self.storage.save_last_version(app_id, current_version)
+                if platform == 'android' and app_info.get('updated'):
+                    self.storage.save_last_updated_time(app_id, app_info['updated'])
                 message = f'Posted to {success_count} destination(s)'
                 if error_messages:
                     message += f' ({len(error_messages)} failed)'
